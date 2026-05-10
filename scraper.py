@@ -48,6 +48,10 @@ def get_list_page(page: SessionPage, url: str):
         print(f"[错误] 请求列表页失败: {e}")
         return [], None
 
+    if not page.html:
+        print(f"[错误] 列表页响应为空")
+        return [], None
+
     tree = etree.HTML(page.html)
 
     # XPath: 所有新闻条目
@@ -92,14 +96,26 @@ def get_list_page(page: SessionPage, url: str):
     return articles, next_url
 
 
-def scrape_article(page: SessionPage, url: str):
+def scrape_article(page: SessionPage, url: str, referer: str = ""):
     """
     抓取单篇新闻，返回 (标题, 正文文本, 元信息)。
     """
-    try:
-        page.get(url)
-    except Exception as e:
-        print(f"  [错误] 请求文章页失败: {e}")
+    if referer:
+        page.session.headers["Referer"] = referer
+
+    for attempt in range(2):
+        try:
+            page.get(url)
+        except Exception as e:
+            print(f"  [错误] 请求文章页失败: {e}")
+            return "", "", ""
+
+        if page.html:
+            break
+        print(f"  [警告] 页面响应为空，重试中... (attempt {attempt + 1})")
+        time.sleep(2)
+    else:
+        print(f"  [警告] 重试后页面仍为空，跳过")
         return "", "", ""
 
     tree = etree.HTML(page.html)
@@ -173,6 +189,21 @@ def save_as_docx(title: str, content: str, meta: str, date: str) -> str:
     return filepath
 
 
+def load_scraped_titles(output_dir: str) -> set:
+    """扫描 output 目录中已有的 .docx 文件，返回已爬取标题的集合（sanitize 后的文件名）。"""
+    scraped = set()
+    if not os.path.exists(output_dir):
+        return scraped
+    for filename in os.listdir(output_dir):
+        if not filename.endswith(".docx"):
+            continue
+        name = filename[:-5]  # 去掉 .docx
+        # 去掉防重名后缀 _1, _2 等，还原为 sanitize 后的基础名
+        base = re.sub(r'_\d+$', '', name)
+        scraped.add(base)
+    return scraped
+
+
 # ============================================================
 # 主流程
 # ============================================================
@@ -180,6 +211,15 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     page = SessionPage()
+    page.session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    })
 
     # 可配置：从命令行参数控制最大页数
     # 用法: python scraper.py [max_pages]
@@ -187,14 +227,18 @@ def main():
     #       python scraper.py    爬全部65页
     max_pages = int(sys.argv[1]) if len(sys.argv) > 1 else 0  # 0 表示不限制
 
+    scraped_titles = load_scraped_titles(OUTPUT_DIR)
+
     current_page_url = LIST_URL
     page_num = 1
     total_saved = 0
+    total_skipped = 0
 
     print("=" * 60)
     print("  北京建筑大学新闻网 - 头条新闻爬虫")
     print(f"  目标: {LIST_URL}")
     print(f"  输出目录: {OUTPUT_DIR}")
+    print(f"  已爬取: {len(scraped_titles)} 篇")
     if max_pages:
         print(f"  限制页数: {max_pages} 页")
     print("=" * 60)
@@ -209,18 +253,26 @@ def main():
             print("  未找到任何文章，退出循环。")
             break
 
-        print(f"  本页共 {len(articles)} 篇文章")
+        # 过滤已爬取的文章
+        new_articles = []
+        for a in articles:
+            if sanitize_filename(a["title"]) not in scraped_titles:
+                new_articles.append(a)
 
-        for idx, article in enumerate(articles, 1):
+        skipped = len(articles) - len(new_articles)
+        total_skipped += skipped
+        print(f"  本页共 {len(articles)} 篇（已爬 {skipped} 篇，待爬 {len(new_articles)} 篇）")
+
+        for idx, article in enumerate(new_articles, 1):
             title_preview = (
                 article["title"][:60] + "..."
                 if len(article["title"]) > 60
                 else article["title"]
             )
-            print(f"  [{idx:2d}/{len(articles)}] 正在爬取: {title_preview}")
+            print(f"  [{idx:2d}/{len(new_articles)}] 正在爬取: {title_preview}")
 
             try:
-                title, content, meta = scrape_article(page, article["url"])
+                title, content, meta = scrape_article(page, article["url"], current_page_url)
 
                 if not content:
                     print(f"        [警告] 正文为空，跳过")
@@ -228,6 +280,7 @@ def main():
 
                 saved_path = save_as_docx(title, content, meta, article["date"])
                 total_saved += 1
+                scraped_titles.add(sanitize_filename(title))
                 print(f"        [已保存] {os.path.basename(saved_path)}")
 
             except Exception as e:
@@ -251,7 +304,7 @@ def main():
             break
 
     print(f"\n{'=' * 60}")
-    print(f"  爬取完成! 共保存 {total_saved} 篇文章")
+    print(f"  爬取完成! 本批保存 {total_saved} 篇，跳过 {total_skipped} 篇已爬")
     print(f"  输出目录: {OUTPUT_DIR}")
     print(f"{'=' * 60}")
 

@@ -9,6 +9,7 @@ import os
 import re
 import time
 import sys
+import random
 from DrissionPage import SessionPage
 from lxml import etree
 from docx import Document
@@ -42,14 +43,21 @@ def get_list_page(page: SessionPage, url: str):
     文章列表每项: {title, url, date}
     """
     print(f"[列表页] 正在请求: {url}")
-    try:
-        page.get(url)
-    except Exception as e:
-        print(f"[错误] 请求列表页失败: {e}")
-        return [], None
 
-    if not page.html:
-        print(f"[错误] 列表页响应为空")
+    for attempt in range(3):
+        try:
+            page.get(url)
+        except Exception as e:
+            print(f"[错误] 请求列表页失败: {e}，重试中... (attempt {attempt + 1})")
+            time.sleep(2 * (attempt + 1))
+            continue
+
+        if page.html:
+            break
+        print(f"[警告] 列表页响应为空，重试中... (attempt {attempt + 1})")
+        time.sleep(2 * (attempt + 1))
+    else:
+        print(f"[错误] 列表页请求失败，已重试3次，跳过此页")
         return [], None
 
     tree = etree.HTML(page.html)
@@ -100,23 +108,32 @@ def scrape_article(page: SessionPage, url: str, referer: str = ""):
     """
     抓取单篇新闻，返回 (标题, 正文文本, 元信息)。
     """
+    original_referer = page.session.headers.get("Referer", "")
     if referer:
         page.session.headers["Referer"] = referer
 
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             page.get(url)
         except Exception as e:
             print(f"  [错误] 请求文章页失败: {e}")
-            return "", "", ""
+            if attempt < 2:
+                delay = 2 * (attempt + 1)
+                print(f"  [重试] 等待 {delay}s 后重试... (attempt {attempt + 1})")
+                time.sleep(delay)
+            continue
 
         if page.html:
             break
         print(f"  [警告] 页面响应为空，重试中... (attempt {attempt + 1})")
-        time.sleep(2)
+        if attempt < 2:
+            time.sleep(2 * (attempt + 1))
     else:
         print(f"  [警告] 重试后页面仍为空，跳过")
+        page.session.headers["Referer"] = original_referer
         return "", "", ""
+
+    page.session.headers["Referer"] = original_referer
 
     tree = etree.HTML(page.html)
 
@@ -287,7 +304,7 @@ def main():
                 print(f"        [异常] {e}")
                 continue
 
-            time.sleep(2)  # 请求间隔，避免给服务器造成压力
+            time.sleep(1.5 + random.random() * 1.5)  # 1.5-3s 随机间隔
 
         # 检查是否继续翻页
         page_num += 1
@@ -298,7 +315,7 @@ def main():
         if next_url:
             print(f"\n  --> 发现下一页: {next_url}")
             current_page_url = next_url
-            time.sleep(2)
+            time.sleep(1.5 + random.random() * 1.5)
         else:
             print(f"\n  --> 已到达最后一页")
             break

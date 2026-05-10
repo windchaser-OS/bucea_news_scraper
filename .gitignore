@@ -1,0 +1,18 @@
+# 虚拟环境
+venv/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 输出目录（爬取的 docx 文件，体积大且频繁变动，不上传）
+output/
+
+# IDE
+.vscode/
+.idea/
+
+# 系统文件
+.DS_Store
+Thumbs.db
